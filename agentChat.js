@@ -1,11 +1,21 @@
-'use strict';
+    'use strict';
 
 const util = require('util');
 const request = require('request');
 const config = require('../config/config');
 const transcript = require('../chats/transcript.json');
-const broker = require('./broker');
+var rp = require('request-promise');
 
+
+function truncateAfter(str, pattern) {
+    return str.slice(0, str.indexOf(pattern));
+  }
+
+ function fetchLITagValues(str) {
+    return str.match(/<li>(.*?)<\/li>/g).map(function(val){
+        return val.replace(/<\/?li>/g,'');
+     });
+ }
 
 
 
@@ -16,6 +26,25 @@ function getNextPingURL(linkArr) {
             return link['@href'].replace('/events', '/events.json');
         }
     }
+}
+
+function textToStructuredContent(arr) {
+    const buttons= arr.map(
+        str =>  {
+            const action= {type:'publishText',text:str}
+            const clickAction= {actions: [action]}
+            const button = {
+                type:'button',
+                tooltip: str,
+                title : str,
+                click:clickAction
+            };
+            return button
+        }
+    );
+
+    const sText= {type:'vertical',elements:buttons}
+    return sText
 }
 
 class AgentChat {
@@ -52,14 +81,14 @@ class AgentChat {
                 'X-Requested-With': 'XMLHttpRequest'
             },
             json: true,
-            body: { 'chat': 'start' }
+            body: {'chat': 'start'}
         };
 
         request(options, (error, response, body) => {
             if (error) {
                 callback(`Failed to start chat session with error: ${JSON.stringify(error)}`);
             }
-            else if (response.statusCode < 200 || response.statusCode > 299) {
+            else if(response.statusCode < 200 || response.statusCode > 299){
                 callback(`Failed o start chat session with error: ${JSON.stringify(body)}`);
             }
             console.log(`Start chat session - body: ${body.chatLocation.link['@href']}`);
@@ -82,15 +111,15 @@ class AgentChat {
                 'content-type': 'application/json',
                 'X-Requested-With': 'XMLHttpRequest'
             },
-            json: true
+            json:true
         };
 
-        request(options, (error, response, body) => {
+        request(options, (error, response, body)=> {
             if (error) {
                 console.error(`Agent polling failed. Error: ${JSON.stringify(error)}`);
                 return;
             }
-            else if (response.statusCode < 200 || response.statusCode > 299) {
+            else if(response.statusCode < 200 || response.statusCode > 299){
                 console.error(`Agent polling failed. body: ${JSON.stringify(body)}`);
                 return;
             }
@@ -128,10 +157,9 @@ class AgentChat {
                         return;
                     }
                     else if ((ev['@type'] === 'line') && (ev['source'] === 'visitor')) {
-                        const keyedText = ev.text
-                        console.log(`(chatPolling) - line form visitor:${keyedText}`);
+                        console.log(`(chatPolling) - line form visitor:${ev.text}`);
 
-                        this.sendLine(keyedText);
+                        this.sendLine(ev.text);
                     }
                 }
             }
@@ -141,50 +169,108 @@ class AgentChat {
         });
     }
 
-    sendLine(keyedText) {
-        // const line = transcript[this.lineIndex];
 
-        broker.querymessage(keyedText)
-            .then(response => {
-                const line = response;
 
-                console.log(`Sending line: ${line}`);
-                const options = {
-                    method: 'POST',
-                    url: `${this.chatLink}/events.json?v=1&NC=true`,
-                    headers: {
-                        'Authorization': `Bearer ${this.session.getBearer()}`,
-                        'content-type': 'application/json',
-                        'X-Requested-With': 'XMLHttpRequest'
-                    },
-                    json: true,
-                    body: {
-                        event: {
-                            '@type': 'line',
-                            'text': `<p dir='ltr' style='direction: ltr; text-align: left;'>${line}</p>`,
-                            'textType': 'html'
-                        }
-                    }
-                };
+    sendLine(inputText) {
+        const line = inputText
 
-                setTimeout(() => {
-                    request(options, (error, response, body) => {
-                        //  this.lineIndex++;
-                        if (error) {
-                            console.log(`Error sending line. Error: ${JSON.stringify(error)}`);
-                        }
-                        else if (response.statusCode < 200 || response.statusCode > 299) {
-                            console.log(`Error sending line. Body: ${JSON.stringify(body)}`);
-
-                        }
-                        console.log(`Send line: ${JSON.stringify(body)}`);
-                    });
-                }, config.chat.minLineWaitTime);
-
-            }).catch(err => {
-                console.error(JSON.stringify(err, null, 2));
-
+        if (!line) {
+            this.stop(err => {
+                if (err) {
+                    console.log(`Error stopping chat err: ${err.message}`);
+                }
             });
+            return;
+        }
+
+        let waOptions = {
+           uri: `https://chat-broker.herokuapp.com/message/${line}`,
+
+            headers: {
+                'User-Agent': 'Request-Promise'
+            },
+            json: true // Automatically parses the JSON string in the response
+        };
+
+        let lpoptions = {
+            method: 'POST',
+            url: `${this.chatLink}/events.json?v=1&NC=true`,
+            headers: {
+                'Authorization': `Bearer ${this.session.getBearer()}`,
+                'content-type': 'application/json',
+                'X-Requested-With': 'XMLHttpRequest'
+            },
+            json: true,
+
+        };
+        const lpresponse={}
+
+        rp(waOptions)
+            .then(function (waResponse) {
+                const liTagValues = fetchLITagValues(waResponse)
+                lpresponse.plainText=truncateAfter(waResponse,"<ol>")
+                lpresponse.structuredContent=textToStructuredContent(liTagValues)
+
+                console.log(`Sending line: ${lpresponse.plainText}`);
+
+                const plainTextOptions= Object.assign({},lpoptions,{body : {
+                    event: {
+                        '@type': 'line',
+                        'text': `<p dir='ltr' style='direction: ltr; text-align: left;'>${lpresponse.plainText}</p>`,
+                        'textType': 'html'
+                    }
+                }})
+
+
+                rp(plainTextOptions)
+                    .then(function (lpResponse) {
+                        const structuredContentOptions= Object.assign({},lpoptions,{body : {
+                            event: {
+                                '@type': 'line',
+                                'json' : lpresponse.structuredContent,
+                                'textType': 'rich-content'
+                            }
+                        }})
+
+                        rp(structuredContentOptions)
+                        .then(function (lpResponse) {
+
+                        }).catch(function (err) {
+                             console.log(err.body)
+                        });
+
+
+                }).catch(function (err) {
+                    console.log(err.body)
+                });
+
+
+        })
+        .catch(function (err) {
+            console.log(err.body)
+        });
+
+
+
+
+
+
+ /*       console.log(`Sending line: ${line}`);
+
+
+        setTimeout(() => {
+            request(options, (error, response, body) => {
+                this.lineIndex++;
+                if (error) {
+                    console.log(`Error sending line. Error: ${JSON.stringify(error)}`);
+                }
+                else if(response.statusCode < 200 || response.statusCode > 299){
+                    console.log(`Error sending line. Body: ${JSON.stringify(body)}`);
+
+                }
+                console.log(`Send line: ${JSON.stringify(body)}`);
+            });
+        }, config.chat.minLineWaitTime);*/
     }
 
     stop(callback) {
@@ -212,7 +298,7 @@ class AgentChat {
                 if (error) {
                     callback(`Error trying to end chat: ${JSON.stringify(error)}`);
                 }
-                else if (response.statusCode < 200 || response.statusCode > 299) {
+                else if(response.statusCode < 200 || response.statusCode > 299){
                     callback(`Error trying to end chat: ${JSON.stringify(body)}`);
                 }
                 this.session.stop(err => {
@@ -221,11 +307,11 @@ class AgentChat {
                         callback(err);
                     }
                     else {
-                        callback();
+                       callback();
                     }
                 });
             });
-        } else {
+        }else{
             callback(`Chat link is unavailable chatLink: ${this.chatLink}`);
         }
     }
