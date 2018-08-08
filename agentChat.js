@@ -207,9 +207,14 @@ class AgentChat {
 
         rp(waOptions)
             .then(function (waResponse) {
-                const liTagValues = fetchLITagValues(waResponse)
+                if(waResponse.includes("<li>"))
+                {
+                    const liTagValues = fetchLITagValues(waResponse)
+                    lpresponse.structuredContent=textToStructuredContent(liTagValues)
+                }
+
                 lpresponse.plainText=truncateAfter(waResponse,"<ol>")
-                lpresponse.structuredContent=textToStructuredContent(liTagValues)
+
 
                 console.log(`Sending line: ${lpresponse.plainText}`);
 
@@ -224,21 +229,22 @@ class AgentChat {
 
                 rp(plainTextOptions)
                     .then(function (lpResponse) {
-                        const structuredContentOptions= Object.assign({},lpoptions,{body : {
-                            event: {
-                                '@type': 'line',
-                                'json' : lpresponse.structuredContent,
-                                'textType': 'rich-content'
-                            }
-                        }})
+                        if(lpresponse.structuredContent) {
+                            const structuredContentOptions= Object.assign({},lpoptions,{body : {
+                                event: {
+                                    '@type': 'line',
+                                    'json' : lpresponse.structuredContent,
+                                    'textType': 'rich-content'
+                                }
+                            }})
 
-                        rp(structuredContentOptions)
-                        .then(function (lpResponse) {
+                            rp(structuredContentOptions)
+                            .then(function (lpResponse) {
 
-                        }).catch(function (err) {
-                             console.log(err.body)
-                        });
-
+                            }).catch(function (err) {
+                                 console.log(err.body)
+                            });
+                        }
 
                 }).catch(function (err) {
                     console.log(err.body)
